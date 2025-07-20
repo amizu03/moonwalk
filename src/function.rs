@@ -491,7 +491,8 @@ impl BranchBlock {
                 if branch_target != 0 {
                     // println!("CALL! {branch_target:X}");
                 }
-            } else if mnemonic == Mnemonic::Shl {
+            }
+            else if mnemonic == Mnemonic::Shl {
                 let op_kind0 = inst.op_kind(0);
                 let op_kind1 = inst.op_kind(1);
 

@@ -28,7 +28,11 @@ impl Obfuscator {
 
         println!("Seeded RNG.");
 
-        let f = bin.functions.iter().filter(|f| rvas.contains(&f.rva));
+        let f = bin
+            .functions
+            .iter()
+            .filter(|f| rvas.is_empty() || rvas.contains(&f.rva))
+            .into_iter();
 
         let mut branches = f
             .map(|f| f.branches.iter().map(Arc::clone).collect::<Vec<_>>())
@@ -71,39 +75,34 @@ impl Obfuscator {
         // shrink output buffer to fit max ip
         out.resize(align_up(ip, 0x1000), 0);
 
+        branch_rva_to_ip.sort_by_key(|x| x.0);
+
         println!("Relocated branches.");
 
         let mem = out.as_mut_ptr() as usize;
 
         // patch branches in parallel
-        all_branches_to_patch
-            .par_iter()
-            .for_each(|patchable_branch| {
-                let src = patchable_branch.next_ip;
-                let dst = branch_rva_to_ip
-                    .iter()
-                    .find(|(rva, ip)| {
-                        // println!("{:X} {:X}", rva, ip);
+        all_branches_to_patch.iter().for_each(|patchable_branch| {
+            let src = patchable_branch.next_ip;
+            let dst = branch_rva_to_ip[branch_rva_to_ip
+                .binary_search_by(|(rva, ip)| rva.cmp(&patchable_branch.original_target_rva))
+                .unwrap()]
+            .1;
+            let rel32: i32 = dst.checked_signed_diff(src).unwrap().try_into().unwrap();
 
-                        *rva == patchable_branch.original_target_rva
-                    })
-                    .unwrap()
-                    .1;
-                let rel32: i32 = dst.checked_signed_diff(src).unwrap().try_into().unwrap();
+            // most likely safe because we will never repatch the same branch twice at the same time
+            // (or at least then its highly unlikely and we would be creating other issues, for ex.)
+            // a race condition where two similar branches meet, etc.
+            unsafe {
+                (mem as *mut [u8; 4])
+                    .byte_add(patchable_branch.instr_rel32_offset)
+                    .write_unaligned(rel32.to_le_bytes());
+            }
 
-                // most likely safe because we will never repatch the same branch twice at the same time
-                // (or at least then its highly unlikely and we would be creating other issues, for ex.)
-                // a race condition where two similar branches meet, etc.
-                unsafe {
-                    (mem as *mut [u8; 4])
-                        .byte_add(patchable_branch.instr_rel32_offset)
-                        .write_unaligned(rel32.to_le_bytes());
-                }
-
-                // out[patchable_branch.instr_rel32_offset
-                //     ..(patchable_branch.instr_rel32_offset + size_of::<i32>())]
-                //     .copy_from_slice(&rel32.to_le_bytes());
-            });
+            // out[patchable_branch.instr_rel32_offset
+            //     ..(patchable_branch.instr_rel32_offset + size_of::<i32>())]
+            //     .copy_from_slice(&rel32.to_le_bytes());
+        });
 
         println!("Patched branch offsets.");
 

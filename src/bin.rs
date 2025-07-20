@@ -318,6 +318,10 @@ impl Bin {
                             0,
                         ));
 
+                        if code[i + 1] == 0x90 {
+                            prev += 1;
+                        }
+
                         break;
                     } else if (code[i] == 0xFF
                         && matches!(code.get(i + 1), Some(0x25))

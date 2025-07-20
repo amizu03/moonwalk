@@ -25,7 +25,7 @@ fn main() -> Result<()> {
 
     let mut asm = CodeAssembler::new(64).unwrap();
 
-    let out = Obfuscator::new(0x0).scatter(&analyzed, &[0x1A3A])?;
+    let out = Obfuscator::new(0x0).scatter(&analyzed, &[])?;
 
     std::fs::write("input/lotus_kmd.bin", out).unwrap();
 
