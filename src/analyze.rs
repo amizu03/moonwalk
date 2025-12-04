@@ -11,12 +11,14 @@ pub struct AnalyzedBin {
 }
 
 impl AnalyzedBin {
-    pub fn data_containing_rva(&self, target_rva: usize) -> Option<usize> {
+    pub fn data_containing_rva(&self, target_rva: usize) -> Option<(usize, usize)> {
         for (rva, size) in &self.data {
             if (*rva..(*rva + size)).contains(&target_rva) {
                 let offset_from_rva = target_rva - rva;
 
-                return Some(rva + offset_from_rva);
+                // println!("{offset_from_rva:X} {:X}", *size);
+
+                return Some((*rva, *size));
             }
         }
 
@@ -27,7 +29,7 @@ impl AnalyzedBin {
     pub fn analyze_bin(bin: Arc<Bin>) -> Self {
         let functions = bin
             .rtt
-            .par_iter()
+            .iter()
             .map(|(f, s)| AnalyzedFunction::from_runtime_function(&bin, f).unwrap())
             .collect::<Vec<_>>();
 
@@ -42,7 +44,7 @@ impl AnalyzedBin {
             // add data from symbol if it wasnt found
             match data_refs.iter().find(|x| x.0 == *rva) {
                 Some(_) => {
-                    // println!("DATA: {data}");
+                    // println!("DATA: {data} {rva:X}");
                 }
                 None => {
                     // println!("DATA: {data}");
@@ -77,7 +79,18 @@ impl AnalyzedBin {
                 if next_rva > rva {
                     let max_size = next_rva - collect_rva;
 
+                    // if data_refs
+                    //     .iter()
+                    //     .find(|(rva, size)| {
+                    //         (*rva..=(*rva + *size)).contains(&collect_rva)
+                    //             && (*rva..=(*rva + *size)).contains(&(collect_rva + max_size))
+                    //     })
+                    //     .is_none()
+                    // {
+                    // println!("{collect_rva:X} {max_size:X}");
                     data.push((collect_rva, max_size));
+                    // }
+
                     i = j;
                     found_next = true;
 
@@ -91,9 +104,10 @@ impl AnalyzedBin {
             }
 
             if !found_next && collect_rva != 0 {
+                // println!("{collect_rva:X} {max_data_size:X}");
+                data.push((collect_rva, max_data_size));
                 collect_rva = 0;
                 max_data_size = 0;
-                data.push((collect_rva, max_data_size));
             }
 
             i += 1;
@@ -102,11 +116,33 @@ impl AnalyzedBin {
         // fix incorrect data sizes
         // TODO: use PDB to increase accuracy
         for d in &mut data {
-            if d.1 > 32 && d.1 < 0x1000 {
-                d.1 = 32;
+            if d.1 > 64 && d.1 < 0x1000 {
+                d.1 = 64;
+                println!("Fixed data size");
+            }
+
+            if d.1 == 0 && d.1 < 0x1000 {
+                d.1 = 64;
                 println!("Fixed data size");
             }
         }
+
+        for i in 0..data.len() {
+            let (collect_rva, max_size) = data[i];
+
+            if let Some((next_rva, next_size)) = data.get(i + 1) {
+                if collect_rva + max_size < *next_rva {
+                    if let Some(ret) = data_refs
+                        .iter()
+                        .find(|(rva, size)| (*rva..(*rva + *size)).contains(&collect_rva))
+                    {
+                        data[i].1 = ret.1;
+                    }
+                }
+            }
+        }
+
+        data.dedup_by_key(|x| x.0);
 
         Self {
             bin,

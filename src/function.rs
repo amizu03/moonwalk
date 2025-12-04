@@ -1,6 +1,7 @@
 use crate::{
     analyze::AnalyzedBin,
     bin::{Bin, RuntimeFunction},
+    obfuscator::ObfuscatorConfig,
     prelude::*,
 };
 
@@ -8,7 +9,8 @@ use iced_x86::{
     BlockEncoder, BlockEncoderOptions, Code, ConditionCode, ConstantOffsets, Decoder,
     DecoderOptions, Instruction, InstructionBlock, Mnemonic, OpKind, Register, RflagsBits,
     code_asm::{
-        CodeAssembler, get_gpr8, get_gpr16, get_gpr32, get_gpr64, ptr, qword_ptr, rax, rdx,
+        AsmRegister64, CodeAssembler, byte_ptr, dword_ptr, get_gpr8, get_gpr16, get_gpr32,
+        get_gpr64, ptr, qword_ptr, rax, rdx, rsp, word_ptr,
     },
 };
 use pe_parser::section::SectionFlags;
@@ -79,7 +81,14 @@ pub fn trace_function(code: &[u8], start_rip: usize) -> Vec<usize> {
         //     println!("BR{}:", visit_count);
         // }
 
-        let offset = (rip - start_rip) as usize;
+        // 111F 11BC
+
+        // println!("{rip:X} - {start_rip:X}");
+
+        let offset = match rip.checked_sub(start_rip) {
+            Some(x) => x,
+            None => continue,
+        };
 
         if offset >= code.len() {
             continue;
@@ -220,13 +229,17 @@ pub fn decode_single_instruction(bytes: &[u8], ip: usize) -> Option<Instruction>
 
 #[derive(Debug, Clone, Copy)]
 pub struct PatchableBranch {
+    pub func_rva: usize,
     pub original_target_rva: usize,
     pub instr_rel32_offset: usize,
     pub next_ip: usize,
+    pub is_data_ref: bool,
+    pub data_size: usize,
 }
 
 #[derive(Debug, Clone)]
 pub struct BranchBlock {
+    pub func_rva: usize,
     pub is_call_target: bool,
     pub rva: usize,
     pub next_rva: usize,
@@ -235,6 +248,8 @@ pub struct BranchBlock {
 
 fn obf_mov(rng: &mut StdRng, a: &mut CodeAssembler, inst: &mut Instruction) -> bool {
     let mut was_obfuscated = false;
+    let mut add_pushf = false;
+    let mut add_popf = false;
 
     let op_kind0 = inst.op_kind(0);
 
@@ -245,10 +260,11 @@ fn obf_mov(rng: &mut StdRng, a: &mut CodeAssembler, inst: &mut Instruction) -> b
         if reg.is_gpr() {
             was_obfuscated = true;
 
-            let rounds = rng.random_range(1..4);
-            let mut vals: Vec<[usize; 5]> = Vec::new();
+            let rounds = rng.random_range(1..=4);
 
             for _ in 0..rounds {
+                let mut vals: Vec<[usize; 7]> = Vec::new();
+
                 match op_kind1 {
                     OpKind::Immediate8 => {
                         let x = [
@@ -257,19 +273,26 @@ fn obf_mov(rng: &mut StdRng, a: &mut CodeAssembler, inst: &mut Instruction) -> b
                             rng.random_range(1..=64),
                             rng.random_range(0..=2),
                             rng.random_range(0..=2),
+                            rng.random_range(0..=1),
+                            rng.random_range(0..=1),
                         ];
 
                         let mut v = inst.immediate8();
-                        if x[3] == 0 {
+                        if x[4] == 0 {
                             v = v.rotate_left(x[2] as u32);
-                        } else if x[3] == 1 {
+                        } else if x[4] == 1 {
                             v = v.rotate_right(x[2] as u32);
                         }
-                        v ^= x[1] as u8;
-                        if x[4] == 0 {
+                        if x[5] == 1 {
+                            v ^= x[1] as u8;
+                        }
+                        if x[3] == 0 {
                             v = v.wrapping_sub(x[0] as u8);
-                        } else if x[4] == 1 {
+                        } else if x[3] == 1 {
                             v = v.wrapping_add(x[0] as u8);
+                        }
+                        if x[6] == 1 {
+                            v = !v;
                         }
 
                         inst.set_immediate8(v);
@@ -283,19 +306,26 @@ fn obf_mov(rng: &mut StdRng, a: &mut CodeAssembler, inst: &mut Instruction) -> b
                             rng.random_range(1..=64),
                             rng.random_range(0..=2),
                             rng.random_range(0..=2),
+                            rng.random_range(0..=1),
+                            rng.random_range(0..=1),
                         ];
 
                         let mut v = inst.immediate16();
-                        if x[3] == 0 {
+                        if x[4] == 0 {
                             v = v.rotate_left(x[2] as u32);
-                        } else if x[3] == 1 {
+                        } else if x[4] == 1 {
                             v = v.rotate_right(x[2] as u32);
                         }
-                        v ^= x[1] as u16;
-                        if x[4] == 0 {
+                        if x[5] == 1 {
+                            v ^= x[1] as u16;
+                        }
+                        if x[3] == 0 {
                             v = v.wrapping_sub(x[0] as u16);
-                        } else if x[4] == 1 {
+                        } else if x[3] == 1 {
                             v = v.wrapping_add(x[0] as u16);
+                        }
+                        if x[6] == 1 {
+                            v = !v;
                         }
 
                         inst.set_immediate16(v);
@@ -309,19 +339,26 @@ fn obf_mov(rng: &mut StdRng, a: &mut CodeAssembler, inst: &mut Instruction) -> b
                             rng.random_range(1..=64),
                             rng.random_range(0..=2),
                             rng.random_range(0..=2),
+                            rng.random_range(0..=1),
+                            rng.random_range(0..=1),
                         ];
 
                         let mut v = inst.immediate32();
-                        if x[3] == 0 {
+                        if x[4] == 0 {
                             v = v.rotate_left(x[2] as u32);
-                        } else if x[3] == 1 {
+                        } else if x[4] == 1 {
                             v = v.rotate_right(x[2] as u32);
                         }
-                        v ^= x[1] as u32;
-                        if x[4] == 0 {
+                        if x[5] == 1 {
+                            v ^= x[1] as u32;
+                        }
+                        if x[3] == 0 {
                             v = v.wrapping_sub(x[0] as u32);
-                        } else if x[4] == 1 {
+                        } else if x[3] == 1 {
                             v = v.wrapping_add(x[0] as u32);
+                        }
+                        if x[6] == 1 {
+                            v = !v;
                         }
 
                         inst.set_immediate32(v);
@@ -335,19 +372,26 @@ fn obf_mov(rng: &mut StdRng, a: &mut CodeAssembler, inst: &mut Instruction) -> b
                             rng.random_range(1..=64),
                             rng.random_range(0..=2),
                             rng.random_range(0..=2),
+                            rng.random_range(0..=1),
+                            rng.random_range(0..=1),
                         ];
 
                         let mut v = inst.immediate64();
-                        if x[3] == 0 {
+                        if x[4] == 0 {
                             v = v.rotate_left(x[2] as u32);
-                        } else if x[3] == 1 {
+                        } else if x[4] == 1 {
                             v = v.rotate_right(x[2] as u32);
                         }
-                        v ^= x[1] as u64;
-                        if x[4] == 0 {
+                        if x[5] == 1 {
+                            v ^= x[1] as u64;
+                        }
+                        if x[3] == 0 {
                             v = v.wrapping_sub(x[0] as u64);
-                        } else if x[4] == 1 {
+                        } else if x[3] == 1 {
                             v = v.wrapping_add(x[0] as u64);
+                        }
+                        if x[6] == 1 {
+                            v = !v;
                         }
 
                         inst.set_immediate64(v);
@@ -361,72 +405,242 @@ fn obf_mov(rng: &mut StdRng, a: &mut CodeAssembler, inst: &mut Instruction) -> b
                         // [0, 0, 0]
                     }
                 };
-            }
 
-            if was_obfuscated {
-                use iced_x86::code_asm::*;
+                //
 
-                a.add_instruction(*inst).unwrap();
+                if was_obfuscated {
+                    use iced_x86::code_asm::*;
 
-                a.pushf().unwrap();
+                    if !add_pushf {
+                        add_pushf = true;
 
-                for [add_val, xor_val, rot_val, is_sub, is_rotl] in vals {
-                    if let Some(r) = get_gpr8(reg) {
-                        a.not(r).unwrap();
-                        if is_sub == 1 {
-                            a.sub(r, add_val as u32).unwrap();
-                        } else if is_sub == 0 {
-                            a.add(r, add_val as u32).unwrap();
-                        }
-                        a.xor(r, xor_val as u32).unwrap();
-                        if is_rotl == 1 {
-                            a.rol(r, rot_val as u32).unwrap();
-                        } else if is_rotl == 0 {
-                            a.ror(r, rot_val as u32).unwrap();
-                        }
-                    } else if let Some(r) = get_gpr16(reg) {
-                        a.not(r).unwrap();
-                        if is_sub == 1 {
-                            a.sub(r, add_val as u32).unwrap();
-                        } else if is_sub == 0 {
-                            a.add(r, add_val as u32).unwrap();
-                        }
-                        a.xor(r, xor_val as u32).unwrap();
-                        if is_rotl == 1 {
-                            a.rol(r, rot_val as u32).unwrap();
-                        } else if is_rotl == 0 {
-                            a.ror(r, rot_val as u32).unwrap();
-                        }
-                    } else if let Some(r) = get_gpr32(reg) {
-                        a.not(r).unwrap();
-                        if is_sub == 1 {
-                            a.sub(r, add_val as u32).unwrap();
-                        } else if is_sub == 0 {
-                            a.add(r, add_val as u32).unwrap();
-                        }
-                        a.xor(r, xor_val as u32).unwrap();
-                        if is_rotl == 1 {
-                            a.rol(r, rot_val as u32).unwrap();
-                        } else if is_rotl == 0 {
-                            a.ror(r, rot_val as u32).unwrap();
-                        }
-                    } else if let Some(r) = get_gpr64(reg) {
-                        a.not(r).unwrap();
-                        if is_sub == 1 {
-                            a.sub(r, add_val as i32).unwrap();
-                        } else if is_sub == 0 {
-                            a.add(r, add_val as i32).unwrap();
-                        }
-                        a.xor(r, xor_val as i32).unwrap();
-                        if is_rotl == 1 {
-                            a.rol(r, rot_val as u32).unwrap();
-                        } else if is_rotl == 0 {
-                            a.ror(r, rot_val as u32).unwrap();
+                        a.add_instruction(*inst).unwrap();
+                        a.pushf().unwrap();
+                    }
+
+                    for [
+                        add_val,
+                        xor_val,
+                        rot_val,
+                        is_sub,
+                        is_rotl,
+                        should_xor_val,
+                        should_not_val,
+                    ] in vals
+                    {
+                        if let Some(r) = get_gpr8(reg) {
+                            if should_not_val != 0 {
+                                a.not(r).unwrap();
+                            }
+                            if is_sub == 1 {
+                                a.sub(r, add_val as u32).unwrap();
+                            } else if is_sub == 0 {
+                                a.add(r, add_val as u32).unwrap();
+                            }
+                            if should_xor_val != 0 {
+                                a.xor(r, xor_val as u32).unwrap();
+                            }
+                            if is_rotl == 1 {
+                                a.rol(r, rot_val as u32).unwrap();
+                            } else if is_rotl == 0 {
+                                a.ror(r, rot_val as u32).unwrap();
+                            }
+                        } else if let Some(r) = get_gpr16(reg) {
+                            if should_not_val != 0 {
+                                a.not(r).unwrap();
+                            }
+                            if is_sub == 1 {
+                                a.sub(r, add_val as u32).unwrap();
+                            } else if is_sub == 0 {
+                                a.add(r, add_val as u32).unwrap();
+                            }
+                            if should_xor_val != 0 {
+                                a.xor(r, xor_val as u32).unwrap();
+                            }
+                            if is_rotl == 1 {
+                                a.rol(r, rot_val as u32).unwrap();
+                            } else if is_rotl == 0 {
+                                a.ror(r, rot_val as u32).unwrap();
+                            }
+                        } else if let Some(r) = get_gpr32(reg) {
+                            if should_not_val != 0 {
+                                a.not(r).unwrap();
+                            }
+                            if is_sub == 1 {
+                                a.sub(r, add_val as u32).unwrap();
+                            } else if is_sub == 0 {
+                                a.add(r, add_val as u32).unwrap();
+                            }
+                            if should_xor_val != 0 {
+                                a.xor(r, xor_val as u32).unwrap();
+                            }
+                            if is_rotl == 1 {
+                                a.rol(r, rot_val as u32).unwrap();
+                            } else if is_rotl == 0 {
+                                a.ror(r, rot_val as u32).unwrap();
+                            }
+                        } else if let Some(r) = get_gpr64(reg) {
+                            if should_not_val != 0 {
+                                a.not(r).unwrap();
+                            }
+                            if is_sub == 1 {
+                                a.sub(r, add_val as i32).unwrap();
+                            } else if is_sub == 0 {
+                                a.add(r, add_val as i32).unwrap();
+                            }
+                            if should_xor_val != 0 {
+                                a.xor(r, xor_val as i32).unwrap();
+                            }
+                            if is_rotl == 1 {
+                                a.rol(r, rot_val as u32).unwrap();
+                            } else if is_rotl == 0 {
+                                a.ror(r, rot_val as u32).unwrap();
+                            }
                         }
                     }
                 }
+            }
+        }
+    }
 
-                a.popf().unwrap();
+    if !add_popf && was_obfuscated {
+        add_popf = true;
+        a.popf().unwrap();
+    }
+
+    was_obfuscated
+}
+
+fn obf_shl(rng: &mut StdRng, a: &mut CodeAssembler, inst: &mut Instruction) -> bool {
+    let mut was_obfuscated = false;
+
+    let op_kind0 = inst.op_kind(0);
+    let op_kind1 = inst.op_kind(1);
+    let divisor = 2u64.pow(inst.immediate8() as u32);
+
+    if op_kind0 == OpKind::Register && op_kind1 == OpKind::Immediate8 && divisor <= u32::MAX as u64
+    {
+        let reg = inst.op0_register();
+
+        if let Some(r) = get_gpr64(reg) {
+            was_obfuscated = true;
+
+            a.sub(rsp, 0x8);
+            a.pushf().unwrap();
+            a.push(rax).unwrap();
+            a.push(rdx).unwrap();
+            if r != rax {
+                if rng.random_range(0..=1) == 0 {
+                    a.xchg(r, rax).unwrap();
+                } else {
+                    a.xchg(rax, r).unwrap();
+                }
+            }
+            let mut tmp_a = CodeAssembler::new(64).unwrap();
+            tmp_a.mov(r, 2u64.pow(inst.immediate8() as u32)).unwrap();
+            let mut tmp_a = tmp_a.take_instructions();
+            obf_mov(rng, a, &mut tmp_a[0]);
+            a.mul(r).unwrap();
+            if r != rax {
+                if rng.random_range(0..=1) == 0 {
+                    a.xchg(r, rax).unwrap();
+                } else {
+                    a.xchg(rax, r).unwrap();
+                }
+            }
+            a.mov(qword_ptr(rsp + 0x8 * 3), r);
+            a.pop(rdx).unwrap();
+            a.pop(rax).unwrap();
+            a.popf().unwrap();
+            if rng.random_range(0..=1) == 0 {
+                a.mov(r, qword_ptr(rsp));
+                a.add(rsp, 0x8);
+            } else {
+                a.add(rsp, 0x8);
+                a.mov(r, qword_ptr(rsp - 0x8));
+            }
+        }
+    }
+
+    was_obfuscated
+}
+
+fn obf_shr(rng: &mut StdRng, a: &mut CodeAssembler, inst: &mut Instruction) -> bool {
+    let mut was_obfuscated = false;
+
+    let op_kind0 = inst.op_kind(0);
+    let op_kind1 = inst.op_kind(1);
+    let divisor = 2u64.pow(inst.immediate8() as u32);
+
+    if op_kind0 == OpKind::Register && op_kind1 == OpKind::Immediate8 && divisor <= u32::MAX as u64
+    {
+        let reg = inst.op0_register();
+
+        if let Some(r) = get_gpr64(reg) {
+            was_obfuscated = true;
+
+            a.sub(rsp, 0x8);
+            a.pushf().unwrap();
+            a.push(rax).unwrap();
+            a.push(rdx).unwrap();
+            if r != rax {
+                if rng.random_range(0..=1) == 0 {
+                    a.xchg(r, rax).unwrap();
+                } else {
+                    a.xchg(rax, r).unwrap();
+                }
+            }
+            let mut tmp_a = CodeAssembler::new(64).unwrap();
+            tmp_a.mov(r, divisor).unwrap();
+            let mut tmp_a = tmp_a.take_instructions();
+            obf_mov(rng, a, &mut tmp_a[0]);
+            a.div(r).unwrap();
+            if r != rax {
+                if rng.random_range(0..=1) == 0 {
+                    a.xchg(r, rax).unwrap();
+                } else {
+                    a.xchg(rax, r).unwrap();
+                }
+            }
+            a.mov(qword_ptr(rsp + 0x8 * 3), r);
+            a.pop(rdx).unwrap();
+            a.pop(rax).unwrap();
+            // a.sub(rsp, 0x8 * 2);
+            a.popf().unwrap();
+            if rng.random_range(0..=1) == 0 {
+                a.mov(r, qword_ptr(rsp));
+                a.add(rsp, 0x8);
+            } else {
+                a.add(rsp, 0x8);
+                a.mov(r, qword_ptr(rsp - 0x8));
+            }
+        }
+    }
+
+    was_obfuscated
+}
+
+fn obf_xor(rng: &mut StdRng, a: &mut CodeAssembler, inst: &mut Instruction) -> bool {
+    let mut was_obfuscated = false;
+
+    let op_kind0 = inst.op_kind(0);
+    let op_kind1 = inst.op_kind(1);
+
+    if op_kind0 == OpKind::Register && op_kind1 == OpKind::Register {
+        let op_reg0 = inst.op_register(0);
+        let op_reg1 = inst.op_register(1);
+
+        if op_reg0.is_gpr() && op_reg0 == op_reg1 {
+            was_obfuscated = true;
+
+            if let Some(r) = get_gpr8(op_reg0) {
+                a.mov(r, 0).unwrap();
+            } else if let Some(r) = get_gpr16(op_reg0) {
+                a.mov(r, 0).unwrap();
+            } else if let Some(r) = get_gpr32(op_reg0) {
+                a.mov(r, 0).unwrap();
+            } else if let Some(r) = get_gpr64(op_reg0) {
+                a.mov(r, 0u64).unwrap();
             }
         }
     }
@@ -440,11 +654,138 @@ impl BranchBlock {
         analyzed_bin: &AnalyzedBin,
         new_rva: usize,
         seed: u64,
+        config: &ObfuscatorConfig,
     ) -> Result<(Vec<u8>, Vec<PatchableBranch>)> {
         let mut a = CodeAssembler::new(64).unwrap();
 
         let mut rng = StdRng::seed_from_u64(seed + self.rva as u64);
         let mut custom_instr = self.instructions.clone();
+
+        // if self.func_rva == 0x1950 {
+        //     let mut mi_used_regs = Vec::new();
+        //     let mut used_regs = Vec::new();
+        //     let mut start_reg_swap_area = 0;
+        //     let mut end_reg_swap_area = 0;
+
+        //     for (i, inst) in self.instructions.iter().enumerate() {
+        //         if is_branch_or_jump(inst) || is_ret(inst) || is_unconditional_jump(inst) {
+        //             // println!("A {used_regs:?} {mi_used_regs:?}");
+        //             mi_used_regs.clear();
+        //             used_regs.clear();
+
+        //             end_reg_swap_area = i;
+
+        //             // let swap_instrs = &custom_instr[start_reg_swap_area..end_reg_swap_area];
+
+        //             // for instr in swap_instrs {
+        //             //     println!("{instr}");
+        //             // }
+        //             println!();
+
+        //             start_reg_swap_area = i + 1;
+        //             continue;
+        //         }
+
+        //         let m = inst.mnemonic();
+
+        //         if inst.is_stack_instruction()
+        //             || m == Mnemonic::Sidt
+        //             || m == Mnemonic::Lidt
+        //             || inst.is_privileged()
+        //             || inst.rflags_read() != 0
+        //         // || (inst.rflags_written() != 0 && m != Mnemonic::Shr && m != Mnemonic::Shl)
+        //         {
+        //             // println!("B {used_regs:?} {mi_used_regs:?}");
+        //             mi_used_regs.clear();
+        //             used_regs.clear();
+
+        //             end_reg_swap_area = i;
+
+        //             // let swap_instrs = &custom_instr[start_reg_swap_area..end_reg_swap_area];
+
+        //             // for instr in swap_instrs {
+        //             //     println!("{instr}");
+        //             // }
+        //             println!();
+
+        //             start_reg_swap_area = i + 1;
+
+        //             continue;
+        //         }
+
+        //         let mb = inst.memory_base();
+        //         let mi = inst.memory_base();
+
+        //         let regs = [
+        //             inst.op_register(0).full_register(),
+        //             inst.op_register(1).full_register(),
+        //             inst.op_register(2).full_register(),
+        //             inst.op_register(3).full_register(),
+        //             inst.op_register(4).full_register(),
+        //         ];
+
+        //         let mi_regs = [mb, mi];
+        //         // println!("{regs:?}");
+        //         let mut found = false;
+
+        //         for reg in regs {
+        //             if reg == Register::None {
+        //                 continue;
+        //             }
+
+        //             if mi_used_regs.iter().find(|r| **r == reg).is_some()
+        //                 || used_regs.iter().find(|r| **r == reg).is_some()
+        //             {
+        //                 end_reg_swap_area = i;
+
+        //                 println!("C {used_regs:?}");
+
+        //                 mi_used_regs.clear();
+        //                 used_regs.clear();
+
+        //                 let swap_instrs = &mut custom_instr[start_reg_swap_area..end_reg_swap_area];
+
+        //                 swap_instrs.shuffle(&mut rng);
+
+        //                 for instr in swap_instrs {
+        //                     println!("{instr}");
+        //                 }
+        //                 println!();
+
+        //                 start_reg_swap_area = end_reg_swap_area;
+        //             }
+
+        //             used_regs.push(reg);
+        //         }
+        //         for reg in mi_regs {
+        //             if reg == Register::None {
+        //                 continue;
+        //             }
+
+        //             if used_regs.iter().find(|r| **r == reg).is_some() {
+        //                 end_reg_swap_area = i;
+
+        //                 println!("D {used_regs:?}");
+
+        //                 mi_used_regs.clear();
+        //                 used_regs.clear();
+
+        //                 let swap_instrs = &mut custom_instr[start_reg_swap_area..end_reg_swap_area];
+
+        //                 swap_instrs.shuffle(&mut rng);
+
+        //                 for instr in swap_instrs {
+        //                     println!("{instr}");
+        //                 }
+        //                 println!();
+
+        //                 start_reg_swap_area = end_reg_swap_area;
+        //             }
+
+        //             mi_used_regs.push(reg);
+        //         }
+        //     }
+        // }
 
         for inst in &mut custom_instr {
             let mut was_obfuscated = false;
@@ -460,6 +801,8 @@ impl BranchBlock {
                 let is_code_section = cs.contains(SectionFlags::IMAGE_SCN_CNT_CODE);
 
                 if is_data_section && !is_code_section {
+                    // println!("{data_rva:X}");
+
                     // println!("{data_rva:X}");
                     // let new_rva = analyzed_bin.data_containing_rva(data_rva as usize).unwrap();
 
@@ -491,121 +834,47 @@ impl BranchBlock {
                 if branch_target != 0 {
                     // println!("CALL! {branch_target:X}");
                 }
-            }
-            else if mnemonic == Mnemonic::Shl {
-                let op_kind0 = inst.op_kind(0);
-                let op_kind1 = inst.op_kind(1);
-
-                if op_kind0 == OpKind::Register && op_kind1 == OpKind::Immediate8 {
-                    let reg = inst.op0_register();
-
-                    if let Some(r) = get_gpr64(reg) {
-                        was_obfuscated = true;
-
-                        a.pushf().unwrap();
-                        a.push(rax).unwrap();
-                        a.push(rdx).unwrap();
-                        if rng.random_range(0..=1) == 0 {
-                            a.xchg(r, rax).unwrap();
-                        } else {
-                            a.xchg(rax, r).unwrap();
-                        }
-                        let mut tmp_a = CodeAssembler::new(64).unwrap();
-                        tmp_a.mov(r, 2u64.pow(inst.immediate8() as u32)).unwrap();
-                        let mut tmp_a = tmp_a.take_instructions();
-                        obf_mov(&mut rng, &mut a, &mut tmp_a[0]);
-                        a.div(r).unwrap();
-                        if rng.random_range(0..=1) == 0 {
-                            a.xchg(r, rax).unwrap();
-                        } else {
-                            a.xchg(rax, r).unwrap();
-                        }
-                        a.pop(rdx).unwrap();
-                        a.pop(rax).unwrap();
-                        a.popf().unwrap();
-                    }
-                }
-            } else if mnemonic == Mnemonic::Shr {
-                let op_kind0 = inst.op_kind(0);
-                let op_kind1 = inst.op_kind(1);
-
-                if op_kind0 == OpKind::Register && op_kind1 == OpKind::Immediate8 {
-                    let reg = inst.op0_register();
-
-                    if let Some(r) = get_gpr64(reg) {
-                        was_obfuscated = true;
-
-                        a.pushf().unwrap();
-                        a.push(rax).unwrap();
-                        a.push(rdx).unwrap();
-                        if rng.random_range(0..=1) == 0 {
-                            a.xchg(r, rax).unwrap();
-                        } else {
-                            a.xchg(rax, r).unwrap();
-                        }
-                        let mut tmp_a = CodeAssembler::new(64).unwrap();
-                        tmp_a.mov(r, 2u64.pow(inst.immediate8() as u32)).unwrap();
-                        let mut tmp_a = tmp_a.take_instructions();
-                        obf_mov(&mut rng, &mut a, &mut tmp_a[0]);
-                        a.mul(r).unwrap();
-                        if rng.random_range(0..=1) == 0 {
-                            a.xchg(r, rax).unwrap();
-                        } else {
-                            a.xchg(rax, r).unwrap();
-                        }
-                        a.pop(rdx).unwrap();
-                        a.pop(rax).unwrap();
-                        a.popf().unwrap();
-                    }
-                }
-            } else if mnemonic == Mnemonic::Xor {
-                let op_kind0 = inst.op_kind(0);
-                let op_kind1 = inst.op_kind(1);
-
-                if op_kind0 == OpKind::Register && op_kind1 == OpKind::Register {
-                    let op_reg0 = inst.op_register(0);
-                    let op_reg1 = inst.op_register(1);
-
-                    if op_reg0.is_gpr() && op_reg0 == op_reg1 {
-                        was_obfuscated = true;
-
-                        if let Some(r) = get_gpr8(op_reg0) {
-                            a.mov(r, 0).unwrap();
-                        } else if let Some(r) = get_gpr16(op_reg0) {
-                            a.mov(r, 0).unwrap();
-                        } else if let Some(r) = get_gpr32(op_reg0) {
-                            a.mov(r, 0).unwrap();
-                        } else if let Some(r) = get_gpr64(op_reg0) {
-                            a.mov(r, 0u64).unwrap();
-                        }
-                    }
-                }
-            } else if mnemonic == Mnemonic::Mov {
+            } else if mnemonic == Mnemonic::Shl && config.shx {
+                was_obfuscated = obf_shl(&mut rng, &mut a, inst);
+            } else if mnemonic == Mnemonic::Shr && config.shx {
+                was_obfuscated = obf_shr(&mut rng, &mut a, inst);
+            } else if mnemonic == Mnemonic::Xor && config.xor {
+                was_obfuscated = obf_xor(&mut rng, &mut a, inst);
+            } else if mnemonic == Mnemonic::Mov && config.mov {
                 was_obfuscated = obf_mov(&mut rng, &mut a, inst);
 
-                if !was_obfuscated {
-                    let op0 = inst.op_kind(0);
-                    let op1 = inst.op_kind(1);
+                // if !was_obfuscated {
+                //     let op0 = inst.op_kind(0);
+                //     let op1 = inst.op_kind(1);
 
-                    if inst.is_ip_rel_memory_operand() {
-                        was_obfuscated = true;
+                //     if inst.is_ip_rel_memory_operand() {
+                //         let disp = inst.memory_displacement64();
+                //         let reg = inst.op_register(0);
 
-                        let disp = inst.memory_displacement64();
-                        let reg = inst.op_register(0);
+                //         if let Some(r) = get_gpr64(reg.full_register()) {
+                //             if get_gpr8(reg).is_none() {
+                //                 was_obfuscated = true;
 
-                        if let Some(r) = get_gpr64(reg) {
-                            let mut tmp_a = CodeAssembler::new(64).unwrap();
-                            tmp_a.mov(r, disp).unwrap();
-                            let mut tmp_a = tmp_a.take_instructions();
-                            obf_mov(&mut rng, &mut a, &mut tmp_a[0]);
+                //                 let mut tmp_a = CodeAssembler::new(64).unwrap();
+                //                 tmp_a.mov(r, disp).unwrap();
+                //                 let mut tmp_a = tmp_a.take_instructions();
+                //                 obf_mov(&mut rng, &mut a, &mut tmp_a[0]);
 
-                            a.mov(r, qword_ptr(r)).unwrap();
-                        } else if let Some(r) = get_gpr32(reg) {
-                        } else if let Some(r) = get_gpr16(reg) {
-                        } else if let Some(r) = get_gpr8(reg) {
-                        }
-                    }
-                }
+                //                 if let Some(r) = get_gpr64(reg) {
+                //                     a.mov(r, qword_ptr(r)).unwrap();
+                //                 } else if let Some(r) = get_gpr32(reg) {
+                //                     a.mov(r, dword_ptr(r)).unwrap();
+                //                 } else if let Some(r) = get_gpr16(reg) {
+                //                     a.mov(r, word_ptr(r)).unwrap();
+                //                 } else if let Some(r) = get_gpr8(reg) {
+                //                     a.mov(r, byte_ptr(r)).unwrap();
+                //                 } else {
+                //                     todo!();
+                //                 }
+                //             }
+                //         }
+                //     }
+                // }
             }
 
             if !was_obfuscated {
@@ -613,14 +882,7 @@ impl BranchBlock {
             }
         }
 
-        // let assembled = a.assemble(self.rva as u64).unwrap();
-        // let mut decoded = Decoder::with_ip(64, &assembled, self.rva as u64, DecoderOptions::NONE);
         let mut custom_instr = a.take_instructions();
-        // while decoded.can_decode() {
-        //     let i = decoded.decode();
-        //     println!("{i}");
-        //     custom_instr.push(i);
-        // }
 
         let last_inst = custom_instr.last().unwrap();
 
@@ -669,6 +931,9 @@ impl BranchBlock {
                         original_target_rva: branch_target as usize,
                         instr_rel32_offset: ip + inst.len() - size_of::<i32>(),
                         next_ip: next_ip as usize,
+                        is_data_ref: false,
+                        data_size: 0,
+                        func_rva: self.func_rva,
                     });
                 }
             } else if inst.mnemonic() == Mnemonic::Call {
@@ -681,6 +946,9 @@ impl BranchBlock {
                         original_target_rva: branch_target as usize,
                         instr_rel32_offset: ip + inst.len() - size_of::<i32>(),
                         next_ip: next_ip as usize,
+                        is_data_ref: false,
+                        data_size: 0,
+                        func_rva: self.func_rva,
                     });
                 }
             } else if inst.is_ip_rel_memory_operand() {
@@ -701,7 +969,26 @@ impl BranchBlock {
                             original_target_rva: ip_rel_rva as usize,
                             instr_rel32_offset: ip + inst.len() - size_of::<i32>(),
                             next_ip: next_ip as usize,
+                            is_data_ref: false,
+                            data_size: 0,
+                            func_rva: self.func_rva,
                         });
+                    } else if !is_code_section && is_data_section {
+                        let next_ip = inst.next_ip();
+
+                        // let new_rva = analyzed_bin
+                        //     .data_containing_rva(ip_rel_rva as usize)
+                        //     .unwrap();
+
+                        branches_to_patch.push(PatchableBranch {
+                            original_target_rva: ip_rel_rva as usize,
+                            instr_rel32_offset: ip + inst.len() - size_of::<i32>(),
+                            next_ip: next_ip as usize,
+                            is_data_ref: true,
+                            data_size: inst.memory_size().size(),
+                            func_rva: self.func_rva,
+                        });
+                        // println!("data ref {ip_rel_rva:X} => {new_rva:X}");
                     }
                 }
             }
@@ -720,6 +1007,9 @@ impl BranchBlock {
                 original_target_rva: self.next_rva,
                 instr_rel32_offset: new_rva + buffer.len() - size_of::<i32>(),
                 next_ip: new_rva + buffer.len(),
+                is_data_ref: false,
+                data_size: 0,
+                func_rva: self.func_rva,
             });
         }
 
@@ -823,22 +1113,26 @@ impl AnalyzedFunction {
         let mut code_refs = Vec::new();
 
         // slice function raw bytes
-        let func_view = bin.read_bytes(rt.fn_start as usize);
+        let func_view = bin.read_bytes(rt.fn_start as usize).unwrap();
         let func_raw = &func_view[..(rt.fn_end - rt.fn_start) as usize];
 
         // trace function branches (excluding calls)
+        // println!("{:#X?}", rt);
         let branches = trace_function(func_raw, rt.fn_start as _);
         let mut separated_branches = Vec::new();
 
+        // rt.unwind_info
         // separate branches in memory order and mark the branch entry/rva
         for (i_branch, branch) in branches.iter().enumerate() {
             let mut ip = 0;
-            let mut decoder = Decoder::with_ip(
-                64,
-                &func_raw[*branch - rt.fn_start as usize..],
-                *branch as _,
-                DecoderOptions::NONE,
-            );
+
+            let off = match (*branch).checked_sub(rt.fn_start as usize) {
+                Some(x) => x,
+                None => continue,
+            };
+
+            let mut decoder =
+                Decoder::with_ip(64, &func_raw[off..], *branch as _, DecoderOptions::NONE);
 
             let mut instructions = Vec::new();
             let mut branch_rva = 0;
@@ -890,6 +1184,7 @@ impl AnalyzedFunction {
                     rva: branch_rva,
                     next_rva: ip,
                     instructions,
+                    func_rva: rt.fn_start as usize,
                 }));
             }
         }

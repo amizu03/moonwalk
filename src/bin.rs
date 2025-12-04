@@ -1,4 +1,4 @@
-use crate::{analyze::AnalyzedBin, pdb::Symbols, prelude::*};
+use crate::{analyze::AnalyzedBin, function::align_up, pdb::Symbols, prelude::*};
 
 use pe_parser::{pe::PortableExecutable, section::SectionHeader};
 use std::{collections::HashMap, fs::File, sync::Arc};
@@ -179,12 +179,12 @@ impl Bin {
         }
     }
 
-    pub fn read_bytes<'a>(&'a self, va: usize) -> &'a [u8] {
+    pub fn read_bytes<'a>(&'a self, va: usize) -> Option<&'a [u8]> {
         let (offset, s) = self.rva_to_file_offset(va);
         let cb = (offset - s.pointer_to_raw_data as usize);
-        let cb_remaining = s.size_of_raw_data as usize - cb;
+        let cb_remaining = (s.size_of_raw_data as usize).checked_sub(cb)?;
 
-        &self.data[offset..offset + cb_remaining]
+        Some(&self.data[offset..offset + cb_remaining])
     }
 
     pub fn rva_to_file_offset<'a>(&'a self, va: usize) -> (usize, &'a SectionHeader) {
@@ -221,9 +221,18 @@ impl Bin {
             .iter()
             .find(|s| s.name.starts_with(b".rdata"))
             .unwrap();
-        let ex = pe.section_table[3];
+
+        // println!("{:?} {:X}", rdata.get_name(), rdata.virtual_address);
+
+        let ex = pe
+            .section_table
+            .iter()
+            .find(|x| x.name.starts_with(b".pdata"))
+            .unwrap();
         let ex_section_raw_data =
             data.as_ptr().addr() + (ex.virtual_address - ex.pointer_to_raw_data) as usize;
+
+        // println!("{:?} {:X}", ex.get_name(), ex.virtual_address);
 
         // first pass find functions by runtime table
         let mut rtt = unsafe {
@@ -231,7 +240,7 @@ impl Bin {
                 data.as_ptr().byte_add(ex.pointer_to_raw_data as usize) as *const RuntimeFunction,
                 ex.virtual_size.min(ex.size_of_raw_data) as usize / size_of::<RuntimeFunction>(),
             )
-            .iter()
+            .par_iter()
             .map(|rt| {
                 (
                     *rt,
@@ -249,6 +258,8 @@ impl Bin {
 
         // sort by function address in ascending order
         rtt.sort_by_key(|x| x.0.fn_start);
+
+        // println!("{rtt:?}");
 
         // second pass find hidden functions by searching for unchecked code
         let code_start = pe.optional_header_64.unwrap().base_of_code as usize;
@@ -269,7 +280,7 @@ impl Bin {
             println!("no debug info!");
         }
 
-        let cv_info = x.read_bytes(dbg.address_of_raw_data as usize);
+        let cv_info = x.read_bytes(dbg.address_of_raw_data as usize).unwrap();
 
         // pdb codeview struct starts with RSDS signature
         if &cv_info[0..4] != b"RSDS" {
@@ -293,7 +304,7 @@ impl Bin {
 
         let mut hidden_code = Vec::<(RuntimeFunction, usize)>::new();
 
-        let code = x.read_bytes(code_start);
+        let code = x.read_bytes(code_start).unwrap();
 
         let mut rt = x.rtt.iter();
         let mut prev = 0x0;
@@ -305,7 +316,12 @@ impl Bin {
                 let start = prev;
 
                 for i in prev..(rt.fn_start as usize - code_start) {
-                    if code[i] == 0xC3 && matches!(code.get(i + 1), Some(0x90) | Some(0xCC)) {
+                    if code[i] == 0xC3
+                        && ((matches!(code.get(i - 4), Some(0x48))
+                            && matches!(code.get(i - 3), Some(0x83)))
+                            || (matches!(code.get(i - 7), Some(0x48))
+                                && matches!(code.get(i - 6), Some(0xC7))))
+                    {
                         prev = i + 0x1;
                         found = true;
 
@@ -318,9 +334,72 @@ impl Bin {
                             0,
                         ));
 
-                        if code[i + 1] == 0x90 {
-                            prev += 1;
+                        // if code[i + 1] == 0x90 {
+                        //     prev += 1;
+                        // }
+
+                        break;
+                    } else if code[i] == 0xC3
+                        && matches!(code.get(i + 1), Some(0x48))
+                        && matches!(code.get(i + 2), Some(0x83))
+                    {
+                        prev = i + 0x1;
+                        found = true;
+
+                        hidden_code.push((
+                            RuntimeFunction {
+                                fn_start: (code_start + start) as u32,
+                                fn_end: (code_start + prev) as u32,
+                                unwind_info: 0x0,
+                            },
+                            0,
+                        ));
+
+                        // if code[i + 1] == 0x90 {
+                        //     prev += 1;
+                        // }
+
+                        break;
+                    } else if code[i] == 0xC3
+                        && matches!(code.get(i + 1), Some(0x90) | Some(0xCC) | Some(0x0F))
+                    {
+                        if code[i + 1] == 0x0F {
+                            prev = i + 0x3;
+                        } else {
+                            prev = i + 0x1;
                         }
+                        found = true;
+
+                        hidden_code.push((
+                            RuntimeFunction {
+                                fn_start: align_up(code_start + start, 0x10) as u32,
+                                fn_end: (code_start + prev) as u32,
+                                unwind_info: 0x0,
+                            },
+                            0,
+                        ));
+
+                        // if code[i + 1] == 0x90 {
+                        //     prev += 1;
+                        // }
+
+                        break;
+                    }
+                    // jmp REG
+                    // int3 pad
+                    else if code[i] == 0xFF && matches!(code.get(i + 2), Some(0x90) | Some(0xCC))
+                    {
+                        prev = i + 0x2;
+                        found = true;
+
+                        hidden_code.push((
+                            RuntimeFunction {
+                                fn_start: (code_start + start) as u32,
+                                fn_end: (code_start + prev) as u32,
+                                unwind_info: 0x0,
+                            },
+                            0,
+                        ));
 
                         break;
                     } else if (code[i] == 0xFF
@@ -328,6 +407,23 @@ impl Bin {
                         && matches!(code.get(i + 6), Some(0xCC)))
                     {
                         prev = i + 0x6;
+                        found = true;
+
+                        hidden_code.push((
+                            RuntimeFunction {
+                                fn_start: (code_start + start) as u32,
+                                fn_end: (code_start + prev) as u32,
+                                unwind_info: 0x0,
+                            },
+                            0,
+                        ));
+
+                        break;
+                    } else if (code[i] == 0xE9
+                        && matches!(code.get(i + 5), Some(0x0F))
+                        && matches!(code.get(i + 6), Some(0x0B)))
+                    {
+                        prev = i + 0x7;
                         found = true;
 
                         hidden_code.push((
