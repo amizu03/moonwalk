@@ -172,14 +172,14 @@ fn create_branch(code: Code, target: usize) -> Instruction {
     instr
 }
 
-pub fn decode_single_instruction(bytes: &[u8], ip: usize) -> Option<Instruction> {
+pub fn decode_single_instruction(bytes: &[u8], ip: usize) -> Option<(Instruction, ConstantOffsets)> {
     let mut decoder = Decoder::with_ip(64, bytes, ip as _, DecoderOptions::NONE);
     let instr = decoder.decode();
 
     if instr.is_invalid() {
         None
     } else {
-        Some(instr)
+        Some((instr, decoder.get_constant_offsets(&instr)))
     }
 }
 
@@ -235,6 +235,8 @@ pub struct PatchableBranch {
     pub next_ip: usize,
     pub is_data_ref: bool,
     pub data_size: usize,
+    pub instr_len: usize,
+    pub disp_offset: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -917,7 +919,7 @@ impl BranchBlock {
 
         for new_inst_offset in &buffer.new_instruction_offsets {
             let ip = new_rva + *new_inst_offset as usize;
-            let inst =
+            let (inst, const_offset) =
                 decode_single_instruction(&buffer.code_buffer[*new_inst_offset as usize..], ip)
                     .unwrap();
 
@@ -934,6 +936,8 @@ impl BranchBlock {
                         is_data_ref: false,
                         data_size: 0,
                         func_rva: self.func_rva,
+                        instr_len: inst.len(),
+                        disp_offset: const_offset.displacement_offset(),
                     });
                 }
             } else if inst.mnemonic() == Mnemonic::Call {
@@ -949,6 +953,8 @@ impl BranchBlock {
                         is_data_ref: false,
                         data_size: 0,
                         func_rva: self.func_rva,
+                        instr_len: inst.len(),
+                        disp_offset: const_offset.displacement_offset(),
                     });
                 }
             } else if inst.is_ip_rel_memory_operand() {
@@ -972,6 +978,8 @@ impl BranchBlock {
                             is_data_ref: false,
                             data_size: 0,
                             func_rva: self.func_rva,
+                            instr_len: inst.len(),
+                            disp_offset: const_offset.displacement_offset(),
                         });
                     } else if !is_code_section && is_data_section {
                         let next_ip = inst.next_ip();
@@ -987,6 +995,8 @@ impl BranchBlock {
                             is_data_ref: true,
                             data_size: inst.memory_size().size(),
                             func_rva: self.func_rva,
+                            instr_len: inst.len(),
+                            disp_offset: const_offset.displacement_offset(),
                         });
                         // println!("data ref {ip_rel_rva:X} => {new_rva:X}");
                     }
@@ -1010,6 +1020,8 @@ impl BranchBlock {
                 is_data_ref: false,
                 data_size: 0,
                 func_rva: self.func_rva,
+                instr_len: 0x5,
+                disp_offset: 0x1,
             });
         }
 

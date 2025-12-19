@@ -1,4 +1,4 @@
-use crate::{analyze::AnalyzedBin, function::align_up, pdb::Symbols, prelude::*};
+use crate::{analyze::AnalyzedBin, function::align_up, pdb::Symbols, prelude::*, function::trace_function};
 
 use pe_parser::{pe::PortableExecutable, section::SectionHeader};
 use std::{collections::HashMap, fs::File, sync::Arc};
@@ -343,12 +343,24 @@ impl Bin {
                         && matches!(code.get(i + 1), Some(0x48))
                         && matches!(code.get(i + 2), Some(0x83))
                     {
+                        let mut n_nops = 0;
+                        for j in 0..32 {
+                            if matches!(code.get(start+j), Some(0xCC)) {
+                                n_nops = j + 0x1;
+                            }
+                            else {
+                                break;
+                            }
+                        }
                         prev = i + 0x1;
                         found = true;
 
+                        // println!("{:X}", code_start + start + n_nops);
+                        // println!("{:X}", code_start + prev);
+
                         hidden_code.push((
                             RuntimeFunction {
-                                fn_start: (code_start + start) as u32,
+                                fn_start: (code_start + start + n_nops) as u32,
                                 fn_end: (code_start + prev) as u32,
                                 unwind_info: 0x0,
                             },
@@ -372,7 +384,7 @@ impl Bin {
 
                         hidden_code.push((
                             RuntimeFunction {
-                                fn_start: align_up(code_start + start, 0x10) as u32,
+                                fn_start: (code_start + start) as u32,
                                 fn_end: (code_start + prev) as u32,
                                 unwind_info: 0x0,
                             },

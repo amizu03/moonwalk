@@ -23,42 +23,48 @@ use crate::prelude::*;
 // const MAGIC: u64 = 0x890123719478141;
 
 fn main() -> Result<()> {
-    // let mut analyzed = Bin::load("input/lotus_kmd.dll")?.analyze();
-    // // let mut analyzed = Bin::load("input/test_sys.dll")?.analyze();
-
-    // let mut asm = CodeAssembler::new(64).unwrap();
-
-    // let (mut out, mut data, (oep, mut oep_out), data_offset) = Obfuscator::new(0x0).scatter(
-    //     &analyzed,
-    //     &[],
-    //     &ObfuscatorConfig {
-    //         shx: false,
-    //         xor: false,
-    //         mov: false,
-    //         encrypt_oep: true,
-    //         swap: true,
-    //     },
-    //     0x1000,
-    // )?;
-
-    // out.resize(align_up(out.len(), 0x1000), 0);
-
-    // out.append(&mut data);
-
-    // out.resize(align_up(out.len(), 0x1000), 0);
-
-    // oep_out.resize(align_up(oep_out.len(), 0x1000), 0);
-
-    // std::fs::write("input/lotus_kmd.bin", &out);
-    // std::fs::write("input/lotus_kmd.oep.bin", &oep_out);
-
+    // mapper::call_user_func("user32.dll", "MessageBoxA", [0; 4]);
     // return Ok(());
+    
+    let mut analyzed = Bin::load("input/lotus_kmd.dll")?.analyze();
+    // let mut analyzed = Bin::load("input/test_sys.dll")?.analyze();
+
+    let mut asm = CodeAssembler::new(64).unwrap();
+
+    let (mut out, mut data, (oep, mut oep_out), data_offset) = Obfuscator::new(0x0).scatter(
+        &analyzed,
+        &[],
+        &ObfuscatorConfig {
+            shx: false,
+            xor: false,
+            mov: false,
+            encrypt_oep: true,
+            swap: true,
+        },
+        0x10000,
+    )?;
+
+    // println!("{:#X?}", analyzed.bin.rtt);
+
+    out.resize(align_up(out.len(), 0x1000), 0);
+
+    out.append(&mut data);
+
+    out.resize(align_up(out.len(), 0x1000), 0);
+
+    oep_out.resize(align_up(oep_out.len(), 0x1000), 0);
+
+    std::fs::write("input/lotus_kmd.bin", &out);
+    std::fs::write("input/lotus_kmd.oep.bin", &oep_out);
+
+    return Ok(());
 
     // let bin = std::fs::read("input/lotus_kmd.dll").unwrap();
-    let bin = std::fs::read("input/hv.dll").unwrap();
+    let bin = std::fs::read("input/lotus_kmd.dll").unwrap();
     let pe = parse_portable_executable(&bin).unwrap();
     let optional = pe.optional_header_64.unwrap();
-    let size_of_image = optional.size_of_image as usize;
+    // let data_section = pe.section_table.iter().find(|s| s.get_name() == Some(".data".to_string())).unwrap();
+    let size_of_image = optional.size_of_code as usize + 0x1000;
     let size_of_image = ((size_of_image + 0xFFF) >> 12 << 12) - 0x1000;
     // let size_of_image = 0x10000;
 
@@ -66,21 +72,21 @@ fn main() -> Result<()> {
 
     let mm_free_independent_pages= mapper::find_pattern(
         "ntoskrnl.exe",
-        // "PAGE",
-        ".text",
-        // b"\x48\x89\x5C\x24\x08\x55\x56\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x8B\xEC\x48\x83\xEC\x60\x48\x83\x65\xD0\x00\xBE\x00\x00\x00\x00",
-        b"\x48\x89\x5C\x24\x20\x55\x56\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x8B\xEC\x48\x83\xEC\x60\x33\xC0\x0F\x57\xC0",
+        "PAGE",
+        // ".text",
+        b"\x48\x89\x5C\x24\x08\x55\x56\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x8B\xEC\x48\x83\xEC\x60\x48\x83\x65\xD0\x00\xBE\x00\x00\x00\x00",
+        // b"\x48\x89\x5C\x24\x20\x55\x56\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x8B\xEC\x48\x83\xEC\x60\x33\xC0\x0F\x57\xC0",
     );
     let mm_set_page_protection = mapper::find_pattern(
         "ntoskrnl.exe",
         ".text",
-        // b"\x48\x89\x5C\x24\x20\x55\x56\x57\x41\x56\x41\x57\x48\x81\xEC\x00\x01\x00\x00\x48\x8B\x05",
-        b"\x48\x89\x5C\x24\x08\x48\x89\x74\x24\x10\x57\x48\x83\xEC\x20\x41\x8B\xF8\x48\x8B\xF2\x48\x8B\xD9"
+        b"\x48\x89\x5C\x24\x20\x55\x56\x57\x41\x56\x41\x57\x48\x81\xEC\x00\x01\x00\x00\x48\x8B\x05",
+        // b"\x48\x89\x5C\x24\x08\x48\x89\x74\x24\x10\x57\x48\x83\xEC\x20\x41\x8B\xF8\x48\x8B\xF2\x48\x8B\xD9"
     );
     let mm_allocate_independent_pages_ex = mapper::find_pattern("ntoskrnl.exe", "PAGE",
 
-        // b"\x48\x8B\xC4\x48\x89\x58\x10\x44\x89\x48\x20\x55\x56\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x81\xEC"
-        b"\x48\x89\x5C\x24\x10\x44\x89\x4C\x24\x20\x55\x56\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x83\xEC\x60\x48\xF7\xC1\xFF\x0F\x00\x00"
+        b"\x48\x8B\xC4\x48\x89\x58\x10\x44\x89\x48\x20\x55\x56\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x81\xEC"
+        // b"\x48\x89\x5C\x24\x10\x44\x89\x4C\x24\x20\x55\x56\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x83\xEC\x60\x48\xF7\xC1\xFF\x0F\x00\x00"
     );
 
     let oep_code = mapper::call_func(mm_allocate_independent_pages_ex, [0x2000, usize::MAX, 0, 0]);
@@ -129,10 +135,11 @@ fn main() -> Result<()> {
     use bin::Bin;
     use obfuscator::Obfuscator;
 
-    let mut analyzed = Bin::load("input/hv.dll")?.analyze();
+    let mut analyzed = Bin::load("input/lotus_kmd.dll")?.analyze();
     // let mut analyzed = Bin::load("input/test_sys.dll")?.analyze();
 
-    println!("{:#X?}", analyzed.bin.rtt);
+    // println!("{:#X?}", analyzed.bin.rtt);
+    println!("Functions: {}", analyzed.bin.rtt.len());
 
     let mut asm = CodeAssembler::new(64).unwrap();
 
@@ -151,6 +158,7 @@ fn main() -> Result<()> {
 
     out.resize(align_up(out.len(), 0x1000), 0);
 
+    let data_len = data.len();
     out.append(&mut data);
 
     out.resize(align_up(out.len(), 0x1000), 0);
@@ -231,6 +239,13 @@ fn main() -> Result<()> {
     // copy image
     mem.write_raw(oep_code.into(), &oep_out).unwrap();
     mem.write_raw(code.into(), &out).unwrap();
+
+    let data_len = align_up(data_len, 0x1000);
+    let code_len = out.len() - data_len;
+    println!("code size: 0x{:X}", code_len);
+    println!("data size: 0x{:X}", data_len);
+    mapper::call_func(mm_set_page_protection, [code, code_len, 0x20, 0]);
+    mapper::call_func(mm_set_page_protection, [code + code_len, data_len, 0x04, 0]);
 
     // copy image
     // let oep = oep_code;

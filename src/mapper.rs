@@ -86,9 +86,9 @@ pub fn call_user_func(module: &str, name: &str, args: [usize; 4]) -> usize {
 
     for proc in processes {
         if proc.name.starts_with("steamwebhelper.exe") {
-            if proc.pid != 0x14E0 {
-                continue;
-            }
+            // if proc.pid != 0x14E0 {
+            //     continue;
+            // }
 
             let mut proc = os.process_by_info(proc).unwrap();
 
@@ -98,6 +98,23 @@ pub fn call_user_func(module: &str, name: &str, args: [usize; 4]) -> usize {
             //         println!("{m:X?}");
             //     }
             // }
+
+            let modules = proc.module_list().unwrap();
+            // dbg!(&modules);
+            let libcef = modules.iter().find(|m| *m.name == *"libcef.dll").unwrap();
+
+            // println!("{libcef:#?}");
+
+            let a1 = proc.read::<usize>((libcef.address.to_umem() + 0xCA16708).into()).unwrap();
+            let a1 = proc.read::<usize>((a1 + 0x90).into()).unwrap();
+            let a1 = proc.read::<usize>((a1 + 0xB0).into()).unwrap();
+            let a1 = proc.read::<usize>((a1 + 0x30).into()).unwrap();
+            let a1 = proc.read::<usize>((a1 + 0x100).into()).unwrap();
+            let a1 = proc.read::<usize>((a1 + 0x58).into()).unwrap();
+            let a1 = proc.read::<usize>((a1 + 0x8).into()).unwrap();
+            // let a1 = proc.read::<usize>((a1.to_umem() + 0x0).into());
+
+            println!("{a1:X}");
 
             let mut op: Option<usize> = None;
             let mut wr_op: Option<usize> = None;
@@ -146,16 +163,20 @@ pub fn call_user_func(module: &str, name: &str, args: [usize; 4]) -> usize {
 
             println!("{:X?} {:X?}", wr_op, op);
 
+            if wr_op.is_none() || op.is_none() {
+                continue;
+            }
+
             // continue;
 
-            let m = proc.module_by_name("user32.dll").unwrap();
-            let export = proc.module_export_by_name(&m, "Sleep").unwrap();
+            let m = proc.module_by_name("ntdll.dll").unwrap();
+            let export = proc.module_export_by_name(&m, "NtWaitForSingleObject").unwrap();
             let func = m.base + export.offset;
 
             println!("{export:X?}");
 
-            let m = proc.module_by_name("kernel32.dll").unwrap();
-            let va_export = proc.module_export_by_name(&m, "VirtualAlloc").unwrap();
+            let m = proc.module_by_name(module).unwrap();
+            let va_export = proc.module_export_by_name(&m, name).unwrap();
             let va_func = m.base + va_export.offset;
 
             println!("{va_export:X?}");
@@ -171,61 +192,55 @@ pub fn call_user_func(module: &str, name: &str, args: [usize; 4]) -> usize {
             // mov rdx, 0x91283910391031
             // mov r8, 0x91283910391031
             // mov r9, 0x91283910391031
-            // mov r10, 0x91283910391031
-            // mov r11, 0x91283910391031
-            // push r11
-            // push r10
             // call rax
+            // mov rbx, 0x91283910391031
             // mov [rbx], rax
             // done:
             // pop r11
             // pop r10
             // pop rbx
-            // push rbx
-            // push rdi
-            // push r14
+            // mov r10, rcx
+            // mov eax, 0x4
+            // test byte ptr[0x7FFE0308], 1
             // jmp [rip+0x1231]
             let mut stub = [
-                0x53, 0x41, 0x52, 0x41, 0x53, 0x48, 0xBB, 0x31, 0x10, 0x39, 0x10, 0x39, 0x28, 0x91,
-                0x00, 0x48, 0x83, 0x3B, 0xFF, 0x75, 0x37, 0x48, 0xB8, 0x31, 0x10, 0x39, 0x10, 0x39,
-                0x28, 0x91, 0x00, 0x48, 0xB9, 0x31, 0x10, 0x39, 0x10, 0x39, 0x28, 0x91, 0x00, 0x48,
-                0xBA, 0x31, 0x10, 0x39, 0x10, 0x39, 0x28, 0x91, 0x00, 0x49, 0xB8, 0x31, 0x10, 0x39,
-                0x10, 0x39, 0x28, 0x91, 0x00, 0x49, 0xB9, 0x31, 0x10, 0x39, 0x10, 0x39, 0x28, 0x91,
-                0x00, 0xFF, 0xD0, 0x48, 0x89, 0x03, 0x41, 0x5B, 0x41, 0x5A, 0x5B, 0x53, 0x57, 0x41,
-                0x56, 0xE9, 0x31, 0x12, 0x00, 0x00,
+                0x53, 0x41, 0x52, 0x41, 0x53, 0x48, 0xBB, 0x31, 0x10, 0x39, 0x10, 0x39, 0x28, 0x91, 0x00, 0x48, 0x83, 0x3B, 0xFF, 0x75, 0x41, 0x48, 0xB8, 0x31, 0x10, 0x39, 0x10, 0x39, 0x28, 0x91, 0x00, 0x48, 0xB9, 0x31, 0x10, 0x39, 0x10, 0x39, 0x28, 0x91, 0x00, 0x48, 0xBA, 0x31, 0x10, 0x39, 0x10, 0x39, 0x28, 0x91, 0x00, 0x49, 0xB8, 0x31, 0x10, 0x39, 0x10, 0x39, 0x28, 0x91, 0x00, 0x49, 0xB9, 0x31, 0x10, 0x39, 0x10, 0x39, 0x28, 0x91, 0x00, 0xFF, 0xD0, 0x48, 0xBB, 0x31, 0x10, 0x39, 0x10, 0x39, 0x28, 0x91, 0x00, 0x48, 0x89, 0x03, 0x41, 0x5B, 0x41, 0x5A, 0x5B, 0x49, 0x89, 0xCA, 0xB8, 0x04, 0x00, 0x00, 0x00, 0xF6, 0x04, 0x25, 0x08, 0x03, 0xFE, 0x7F, 0x01,
+                0xff, 0x25, 0x00, 0x00, 0x00, 0x00, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc
             ];
 
             unsafe {
-                (stub.as_mut_ptr().add(0x5 + 0x2) as *mut usize).write_unaligned(wr_op.unwrap());
+                (stub.as_mut_ptr().add(0x5 + 0x2) as *mut usize).write_unaligned(op.unwrap());
                 (stub.as_mut_ptr().add(0x15 + 0x2) as *mut usize)
                     .write_unaligned(va_func.to_umem() as usize);
                 (stub.as_mut_ptr().add(0x1F + 0x2) as *mut usize).write_unaligned(args[0]);
                 (stub.as_mut_ptr().add(0x29 + 0x2) as *mut usize).write_unaligned(args[1]);
                 (stub.as_mut_ptr().add(0x33 + 0x2) as *mut usize).write_unaligned(args[2]);
                 (stub.as_mut_ptr().add(0x3D + 0x2) as *mut usize).write_unaligned(args[3]);
-                // (stub.as_mut_ptr().add(0x47 + 0x2) as *mut usize).write_unaligned(args[4]);
+                (stub.as_mut_ptr().add(0x49 + 0x2) as *mut usize).write_unaligned(wr_op.unwrap());
                 // (stub.as_mut_ptr().add(0x51 + 0x2) as *mut usize).write_unaligned(args[5]);
 
                 let rel32_off = (func.to_umem() as usize + 0x5) as isize
-                    - (op.unwrap() + stub.len() - 0x5 - 0x5) as isize;
-                (stub.as_mut_ptr().add(0x55 + 0x1) as *mut i32).write_unaligned(rel32_off as i32);
+                    - (wr_op.unwrap() + stub.len() - 0x5 - 0x5) as isize;
+                (stub.as_mut_ptr().add(0x6B + 0x6) as *mut u64).write_unaligned(func.to_umem() + 16);
 
-                proc.write_raw(op.unwrap().into(), &stub[..]).unwrap();
+                proc.write_raw(wr_op.unwrap().into(), &stub[..]).unwrap();
 
-                let rel32_off = op.unwrap() as isize - (func.to_umem() as usize - 0x5) as isize;
-                let mut backup_stub1 = [0x00, 0x00, 0x00, 0x00, 0x00];
-                let mut stub1 = [0xE9, 0x00, 0x00, 0x00, 0x00];
+                let rel32_off = wr_op.unwrap() as isize - (func.to_umem() as usize - 0x5) as isize;
+                let mut backup_stub1 = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+                let mut stub1 =        [0xff, 0x25, 0x00, 0x00, 0x00, 0x00, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0x90, 0x90];
 
-                (stub1.as_mut_ptr().add(0x1) as *mut i32).write_unaligned(rel32_off as i32);
+                (stub1.as_mut_ptr().add(0x6) as *mut u64).write_unaligned(wr_op.unwrap() as _);
+
+                proc.write(op.unwrap().into(), &usize::MAX).unwrap();
+
+                // sleep(Duration::from_secs(60));
 
                 proc.read_raw_into(func, &mut backup_stub1[..]).unwrap();
                 proc.write_raw(func, &mut stub1[..]).unwrap();
 
-                proc.write(wr_op.unwrap().into(), &usize::MAX).unwrap();
+                while proc.read::<usize>(op.unwrap().into()).unwrap() == usize::MAX {}
 
-                while proc.read::<usize>(wr_op.unwrap().into()).unwrap() == usize::MAX {}
-
-                let alloc = proc.read::<usize>(wr_op.unwrap().into()).unwrap();
+                let alloc = proc.read::<usize>(op.unwrap().into()).unwrap();
                 println!("{alloc:X}");
 
                 stub.fill(0);

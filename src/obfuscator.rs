@@ -236,12 +236,26 @@ impl Obfuscator {
 
                 let mut rel32: i32 = dst.checked_signed_diff(src).unwrap().try_into().unwrap();
 
+                // println!(
+                //     "{:X} {:X} {:X} {:X} {:X}",
+                //     patchable_branch.original_target_rva,
+                //     patchable_branch.next_ip,
+                //     patchable_branch.instr_rel32_offset,
+                //     patchable_branch.instr_len,
+                //     patchable_branch.disp_offset
+                // );
+
+                let rel32_offset = patchable_branch.next_ip - patchable_branch.instr_len + patchable_branch.disp_offset;
+
+                // println!("{:X} {:X}", patchable_branch.instr_rel32_offset, rel32_offset);
+
                 // most likely safe because we will never repatch the same branch twice at the same time
                 // (or at least then its highly unlikely and we would be creating other issues, for ex.)
                 // a race condition where two similar branches meet, etc.
                 unsafe {
                     (mem as *mut [u8; 4])
-                        .byte_add(patchable_branch.instr_rel32_offset)
+                        .byte_add(rel32_offset)
+                        // .byte_add(patchable_branch.instr_rel32_offset)
                         .write_unaligned(rel32.to_le_bytes());
                 }
 
@@ -300,19 +314,18 @@ impl Obfuscator {
                     // most likely safe because we will never repatch the same branch twice at the same time
                     // (or at least then its highly unlikely and we would be creating other issues, for ex.)
                     // a race condition where two similar branches meet, etc.
+                    let rel32_offset = patchable_branch.next_ip - patchable_branch.instr_len + patchable_branch.disp_offset;
+                    // println!("{:X} {:X}", patchable_branch.instr_rel32_offset, rel32_offset);
                     unsafe {
                         (oep_mem as *mut [u8; 4])
-                            .byte_add(patchable_branch.instr_rel32_offset)
+                            .byte_add(rel32_offset)
+                            // .byte_add(rel32_offset)
                             .write_unaligned(rel32.to_le_bytes());
                     }
 
                     return;
                 }
 
-                // println!(
-                //     "{:X} {:X}",
-                //     patchable_branch.original_target_rva, patchable_branch.next_ip
-                // );
 
                 let src = patchable_branch.next_ip;
                 let mut index_is_not_oep_table = false;
@@ -346,6 +359,11 @@ impl Obfuscator {
                 // most likely safe because we will never repatch the same branch twice at the same time
                 // (or at least then its highly unlikely and we would be creating other issues, for ex.)
                 // a race condition where two similar branches meet, etc.
+                
+                // println!(
+                //     "{:#X?}",
+                //     patchable_branch
+                // );
                 unsafe {
                     (oep_mem as *mut [u8; 4])
                         .byte_add(patchable_branch.instr_rel32_offset)
